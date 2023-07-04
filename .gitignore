@@ -1,0 +1,14 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+Data/housing.csv
+Data/ncbirths.csv
+Data/CA_Counties_TIGER2016.cpg
+Data/CA_Counties_TIGER2016.dbf
+Data/CA_Counties_TIGER2016.sbn
+Data/CA_Counties_TIGER2016.sbx
+Data/CA_Counties_TIGER2016.shp
+Data/CA_Counties_TIGER2016.xml
+Data/CA_Counties_TIGER2016.shx
+
