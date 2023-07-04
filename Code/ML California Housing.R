@@ -87,6 +87,7 @@ housing_df %>%
 # Tell us that as median income decreases, the number of bedrooms_per_room also decreases (-0.616) as expected.
 # Also tells us that rooms_per_household has a negative correlation with bedrooms_per_household (-0.417) again, as expected.
 # Given this is a California data set and location may play a role in our model, can we try some maps?
+# We also see that housing_median_age feature does not correkate with other features
 
 # Read a shapefile with CA counties:
 # Shapefiles are useful method of representing geospatial data (includes location on the Earth's surface).
@@ -122,16 +123,101 @@ ggplot()+
   labs(size = "Population",
        colour = "Median House Value")
 # From the map we can see that prices seem to be related to location and population density
-# ocean_proximity may be a useful predictor however, it's work noting that in northern CA, prices in coastal districts are not too high
+# ocean_proximity may be a useful predictor however 
+# it's worth noting that in northern CA, prices in coastal districts are not too high
 
+# Next, we can explore the features of the numerical variables
+# This can be helpful in identifying outliers which could skew the model
+housing_df %>% 
+  select(price_category, where(is.numeric), -longitude, -latitude) %>% 
+  pivot_longer(cols = 2:10,
+               names_to = "feature",
+               values_to = "value") %>% 
+  ggplot()+
+  aes(x = price_category, y = value, fill = price_category)+
+  coord_flip()+
+  geom_boxplot()+
+  facet_wrap(~ feature, scales = "free")+
+  theme_bw()+
+  theme(legend.position = "none")+
+  labs(x = NULL, y = NULL, title = "Feature Exploration - Numerical Variables")+
+  theme(plot.title = element_text(hjust = 0.5))
+# We can see that rooms_per_household, population_per_household & population have outliers, >100, >1200 & >30000 respectively
 
+# We can re-run the code above but this time removing the outliers
+housing_df %>% 
+  select(price_category, where(is.numeric), -longitude, -latitude) %>% 
+  filter(rooms_per_household < 50,
+         population_per_household < 20,
+         population < 20000) %>% 
+  pivot_longer(cols = 2:10,
+               names_to = "feature",
+               values_to = "value") %>% 
+  ggplot()+
+  aes(x = price_category, y = value, fill = price_category)+
+  coord_flip()+
+  geom_boxplot()+
+  facet_wrap(~ feature, scales = "free")+
+  theme_bw()+
+  theme(legend.position = "none")+
+  labs(x = NULL, y = NULL, title = "Feature Exploration - Numerical Variables (No Outliers)")+
+  theme(plot.title = element_text(hjust = 0.5))
 
+# We can also have a look at the relationships between the numerical variables (correlations)
+housing_df %>% 
+  select(price_category,
+         median_income,
+         bedrooms_per_room,
+         rooms_per_household,
+         population_per_household) %>% 
+  ggscatmat(color = "price_category",
+            corMethod = "spearman")+
+  theme_bw()+
+  labs(x = NULL, y = NULL, title = "Scatterplot - Correlation of Numerical Variables")+
+  theme(plot.title = element_text(hjust = 0.5))
+# We observe correlations between median_income vs rooms_per_household & vs bedrooms_per_room in both price categories
+# We also observe a relationship between rooms_per_household vs bedrooms_per_room in both price categoris
 
+# Having looked at the numerical variables,
+# There are still the two categorical variables remaining
+# We can have a brief look at these using the gt library as previously and make a display table
 
+housing_df %>% 
+  count(price_category, ocean_proximity) %>% 
+  group_by(price_category) %>% 
+  mutate(percent = n / sum(n) *100,
+         percent = round(percent, 2)) %>% 
+  gt() %>% 
+  tab_header(
+    title = "California median house prices",
+    subtitle = "Districts above and below 150.000$"
+  ) %>% 
+  cols_label(
+    ocean_proximity = "Ocean Proximity",
+    n = "Districts",
+    percent = "Percent"
+  ) %>% 
+  fmt_number(
+    columns = vars(n),
+    suffixing = TRUE
+  ) 
 
+# Or visualize these features as a heatmap
+housing_df %>%
+  ggplot(aes(x = price_category, 
+             y = ocean_proximity)) +
+  geom_bin2d() +
+  scale_fill_continuous(type = "viridis")+
+  theme_light()+
+  labs(x=NULL, y= NULL, title = "You will pay >$150k for a property <1hr from the Pacific")+
+  theme(plot.title = element_text(hjust = 0.5))
 
+## Up to this point, we have performed data cleaning and manipulation as a set up for our model
+## We have also performed some EDA to assess which features would be useful in the model
+## Features = logitute, latitude, price_category, median_income, ocean_proximity, bedrooms_per_room, rooms_per_household and population_per_household
 
-
+## Moving on to the next step - building the model
+# Feature Selection and Data Split
 
 
 
