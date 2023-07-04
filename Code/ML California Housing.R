@@ -7,6 +7,11 @@ library(janitor)
 library(rpart.plot)
 library(gt)
 library(DataExplorer)
+library(ranger)
+library(xgboost)
+library(C50)
+library(kknn)
+library(vip)
 
 # for the figures
 train_color <- "#1a162d"
@@ -218,6 +223,349 @@ housing_df %>%
 
 ## Moving on to the next step - building the model
 # Feature Selection and Data Split
+
+housing_df_new <- housing_df %>% # select features
+  select(longitude, latitude,
+         price_category, median_income,
+         ocean_proximity, bedrooms_per_room,
+         rooms_per_household, population_per_household)
+
+glimpse(housing_df_new)
+
+# Split data
+set.seed(123)
+
+data_split <- initial_split(housing_df_new,
+                            prop = 0.8,
+                            strata = price_category)
+
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+
+# Recipe
+housing_recipe <- # has 2 arguments
+  recipe(price_category ~ ., # 1 - a formula e.g. price_category, any variable on the left hand side of the ~ is the model outcome
+         # anything on the right hand side of the ~ are the predictors. The dot (.) indicates all other variables are the predictors
+         data = train_data) %>% # 2 - the data, which is always the training set
+  update_role(longitude, latitude,
+              new_role = "ID") %>% # update_role tells recipe that lon and lat have a custom role called "ID", recipe keeps these variables but does not use the as outcomes or predictors
+  step_log(median_income, # - `step_log()` will log transform data (since some of our numerical variables are right-skewed). Cannot be performed on negative numbers.
+           bedrooms_per_room, rooms_per_household,
+           population_per_household) %>% 
+  step_naomit(everything(), skip = TRUE) %>% # removes rows of data with NA's
+  step_novel(all_nominal(), -all_outcomes()) %>% # converts all nominal variables to factors and takes care of other issues related to categorical variables.
+  step_normalize(all_numeric(), -all_outcomes(),
+                 -longitude, -latitude) %>% # normalizes (center and scales) the numeric variables to have a standard deviation of one and a mean of zero. (i.e., z-standardization).
+  step_dummy(all_nominal(), -all_outcomes()) %>% # converts our factor column ocean_proximity into numeric binary (0 and 1) variables.
+  step_zv(all_numeric(), -all_outcomes()) %>% # removes any numeric variables that have zero variance.
+  step_corr(all_predictors(), threshold = 0.7, method = "spearman") # will remove predictor variables with high correlations with other predictor variables.
+  
+summary(housing_recipe)
+
+## What does our processed data look like?
+prepped_data <- 
+  housing_recipe %>% # use the recipe object
+  prep() %>% # perform the recipe on training data
+  juice() # extract only the preprocessed dataframe 
+
+glimpse(prepped_data)
+
+prepped_data %>% 
+  select(median_income, rooms_per_household, population_per_household, price_category) %>% 
+  ggpairs()
+
+
+# Validation Set
+# Use k-fold cross validation to build a set of 10 validation folds
+set.seed(123)
+
+cv_folds <-
+  vfold_cv(train_data, 
+           v = 10, 
+           strata = price_category) 
+
+## Model Building (1/2)
+# 1. Pick a `model type`
+# 2. set the `engine`
+# 3. Set the `mode`: regression or classification
+
+# Logistic regression
+log_spec <- logistic_reg() %>%
+  set_engine(engine = "glm") %>% 
+  set_mode("classification")
+log_spec
+
+# Decision tree
+tree_spec <- decision_tree() %>% 
+  set_engine(engine = "C5.0") %>% 
+  set_mode("classification")
+tree_spec
+
+# Random Forest
+rf_spec <- 
+  rand_forest() %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+rf_spec
+
+# Boosted tree (XGBoost)
+xgb_spec <-
+  boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+xgb_spec
+
+# K-nearest neighbours (k-NN)
+knn_spec <-
+  nearest_neighbor(neighbors = 4) %>% # this can be adjusted
+  set_engine("kknn") %>% 
+  set_mode("classification")
+knn_spec
+
+## Bundle the recipe and the model with "workflows"
+
+# Logistic regression workflow
+log_wflow <- 
+  workflow() %>% # use workflow function
+  add_recipe(housing_recipe) %>% # use the new recipe
+  add_model(log_spec) # add your model spec
+log_wflow
+
+# Decision tree workflow
+tree_wflow <-
+  workflow() %>%
+  add_recipe(housing_recipe) %>% 
+  add_model(tree_spec) 
+tree_wflow
+
+# Random forest workflow
+rf_wflow <-
+  workflow() %>%
+  add_recipe(housing_recipe) %>% 
+  add_model(rf_spec) 
+rf_wflow
+
+# Boosted tree workflow
+xgb_wflow <-
+  workflow() %>%
+  add_recipe(housing_recipe) %>% 
+  add_model(xgb_spec)
+xgb_wflow
+
+# K-nearest neighbours (k-NN) workflow
+knn_wflow <-
+  workflow() %>%
+  add_recipe(housing_recipe) %>% 
+  add_model(knn_spec)
+knn_wflow
+
+
+## Evaluate Models using the validation set cv_folds using fit_resamples()
+# Logistic regression evaluation
+log_res <- log_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds,
+    metrics = metric_set(
+      recall, precision, f_meas, accuracy,
+      kap, roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE))
+
+# Show average performance over all folds (note that we use log_res):
+log_res %>%  collect_metrics(summarize = TRUE)
+
+# Show performance for every single fold:
+log_res %>%  collect_metrics(summarize = FALSE)
+
+# collect_predictions() and get confusion matrix
+log_pred <- log_res %>% collect_predictions()
+
+log_pred %>%  conf_mat(price_category, .pred_class) 
+
+log_pred %>% 
+  conf_mat(price_category, .pred_class) %>% 
+  autoplot(type = "mosaic") +
+  geom_label(aes(
+    x = (xmax + xmin) / 2, 
+    y = (ymax + ymin) / 2, 
+    label = c("TP", "FN", "FP", "TN")))
+
+log_pred %>% 
+  conf_mat(price_category, .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+# ROC Curve
+log_pred %>% 
+  group_by(id) %>% # id contains our folds
+  roc_curve(price_category, .pred_above) %>% 
+  autoplot()
+
+
+# Decision Tree evaluation
+tree_res <-
+  tree_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  ) 
+
+tree_res %>%  collect_metrics(summarize = TRUE)
+
+
+# Random Forest evaluation
+rf_res <-
+  rf_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  ) 
+
+rf_res %>%  collect_metrics(summarize = TRUE)
+
+
+# Boosted tree - XGBoost evaluation
+xgb_res <- 
+  xgb_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  ) 
+
+xgb_res %>% collect_metrics(summarize = TRUE)
+
+
+# K-nearest neighbour evaluation
+knn_res <- 
+  knn_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  ) 
+
+knn_res %>% collect_metrics(summarize = TRUE)
+
+
+## Model Comparison
+log_metrics <- 
+  log_res %>% 
+  collect_metrics(summarise = TRUE) %>%
+  # add the name of the model to every row
+  mutate(model = "Logistic Regression") 
+
+tree_metrics <- 
+  tree_res %>% 
+  collect_metrics(summarise = TRUE) %>%
+  mutate(model = "Decision Tree")
+
+rf_metrics <- 
+  rf_res %>% 
+  collect_metrics(summarise = TRUE) %>%
+  mutate(model = "Random Forest")
+
+xgb_metrics <- 
+  xgb_res %>% 
+  collect_metrics(summarise = TRUE) %>%
+  mutate(model = "XGBoost")
+
+knn_metrics <- 
+  knn_res %>% 
+  collect_metrics(summarise = TRUE) %>%
+  mutate(model = "Knn")
+
+# create dataframe with all models
+model_compare <- bind_rows(log_metrics,
+                           tree_metrics,
+                           rf_metrics,
+                           xgb_metrics,
+                           knn_metrics) 
+
+#Pivot wider to create barplot
+model_comp <- model_compare %>% 
+  select(model, .metric, mean, std_err) %>% 
+  pivot_wider(names_from = .metric, values_from = c(mean, std_err)) 
+
+# show mean are under the curve (ROC-AUC) for every model
+model_comp %>% 
+  arrange(mean_roc_auc) %>% 
+  mutate(model = fct_reorder(model, mean_roc_auc)) %>% # order results
+  ggplot(aes(model, mean_roc_auc, fill=model)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_brewer(palette = "Blues") +
+  geom_text(
+    size = 3,
+    aes(label = round(mean_roc_auc, 2), 
+        y = mean_roc_auc + 0.08),
+    vjust = 1
+  )+
+  theme_light()+
+  theme(legend.position = "none")+
+  labs(x = NULL, y = NULL, title = "XGBoost model performs with 93% accuracy")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+## `last_fit()` on test set
+# - `last_fit()`  fits a model to the whole training data and evaluates it on the test set. 
+# - provide the workflow object of the best model as well as the data split object (not the training data). 
+last_fit_xgb <- last_fit(xgb_wflow, 
+                         split = data_split,
+                         metrics = metric_set(
+                           accuracy, f_meas, kap, precision,
+                           recall, roc_auc, sens, spec))
+
+last_fit_xgb %>% collect_metrics(summarize = TRUE)
+
+#Compare to training
+xgb_res %>% collect_metrics(summarize = TRUE)
+
+
+## Variable importance using vip package
+# vip visualizes variable importance scores for the top features. Note that we can’t create this type of plot for every model engine.
+# Access the variable importance scores via the .workflow column: pluck out the first element in the workflow column, then pull out the fit from thr workflow
+
+last_fit_xgb %>% 
+  pluck(".workflow", 1) %>%   
+  pull_workflow_fit() %>% 
+  vip(num_features = 10) +
+  theme_light()
+
+
+# Final Confusion Matrix
+last_fit_xgb %>%
+  collect_predictions() %>% 
+  conf_mat(price_category, .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+
+# Final ROC curve
+last_fit_xgb %>% 
+  collect_predictions() %>% 
+  roc_curve(price_category, .pred_above) %>% 
+  autoplot()
+
+
+
+
+
+
+
+
 
 
 
