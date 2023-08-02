@@ -559,13 +559,3 @@ last_fit_xgb %>%
   roc_curve(price_category, .pred_above) %>% 
   autoplot()
 
-
-
-
-
-
-
-
-
-
-
